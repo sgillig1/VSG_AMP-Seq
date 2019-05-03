@@ -10,10 +10,7 @@ from Bio import SeqIO
 
 import HTSeq
 import sys
-#import os
 import logging
-
-#import time
 
 
 #from Bio.SeqIO.QualityIO import FastqGeneralIterator
