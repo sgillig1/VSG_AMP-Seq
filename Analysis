@@ -1,0 +1,672 @@
+import argparse # to take the arguments into the file
+from datetime import datetime # time specific tests for optimization
+from sys import argv 
+import os 
+from Bio.SeqIO.QualityIO import FastqGeneralIterator
+import csv
+import pysam
+import time
+from Bio import SeqIO
+
+import HTSeq
+import sys
+#import os
+import logging
+
+from Bio import pairwise2 as pw2
+
+#import time
+
+
+#from Bio.SeqIO.QualityIO import FastqGeneralIterator
+from difflib import SequenceMatcher
+    
+
+def VSG(reads_R1, reads_R2, reference, final_sam, genome_name, gff_file, target_gene):
+    # reads_R2 = fq file name Read 2 (read from target gene primer)
+    # reads_R1 = fq file name Read 1 (opposite end read)
+    # reference = reference file name (The AM_VSG genome) (Base name for the reference genome)
+    # final_sam = output file base name (no extension)
+    # genome_name fasta file
+    # gff_file = gff file
+    # target_gene = target gene id
+    
+    ##########################################################################
+    
+    def trimmer(reads, case): # outputs the sam file name of the trimmed reads, imputs an fq file name of unaligned reads
+        i = 1
+        junk = open("%s_junk.fq" % (final_sam), 'w') # JUNK should contain a list of all the reads from the trimmer that did not end up aligning
+        junk_name = final_sam + "_junk.fq"
+        final_unaligned = final_sam + "unaligned.fq" # the unaligned file name for all
+        unaligned_reads = open(final_unaligned, 'w')
+        unaligned_reads.close()
+        while i <= 100: #iterate through the trimming process 100 times
+            if i == 1: # run first alignment(There is nothing for it to merge with for the aligned SAM) (can you only output the aligned to SAM and not the unaligned??)
+                os.system(bowtie_code % (final_unaligned, reference, reads, sam_list[i])) # GET RID OF THIS
+                sam_filename = aligned_list[i] #the current full list of alignments   
+            elif i == 2 : # run alignment and merge the two sam files, delete the first SAM file
+                if os.path.getsize(reads):
+                    os.system(bowtie_code % (final_unaligned, reference, reads, sam_list[i]))
+                    os.system("samtools merge -f %s %s %s" % (new_list[i], sam_list[i-1], sam_list[i])) # merge the first two sam files
+                    os.system("samtools view -F 4 -h %s > %s" % (new_list[i], aligned_list[i])) # only take aligned files
+                    os.remove(new_list[i]) # delete the old new file
+                    os.remove(sam_list[i-1]) # delete first SAM
+                    os.remove(sam_list[i])
+                    sam_filename = aligned_list[i] #the current full list of alignments   
+                else:
+                    print('nothing left to align')
+                    break
+            else: # run alignment and merge the two sam files, delete the previous SAM file and the previous merge file
+                if os.path.getsize(reads):
+                    os.system(bowtie_code % (final_unaligned, reference, reads, sam_list[i]))
+                    os.system("samtools merge -f %s %s %s" % (new_list[i], aligned_list[i-1], sam_list[i]))
+                    os.system("samtools view -F 4 -h %s > %s" % (new_list[i], aligned_list[i])) # only take aligned files
+                    os.remove(new_list[i]) # delete the old new file
+                    os.remove(aligned_list[i-1]) # delete the old new file
+                    os.remove(sam_list[i]) # delete the last file
+                    sam_filename = aligned_list[i] #the current full list of alignments   
+                else:
+                    print('nothing left to align')
+                    break
+            unaligned_reads = open(final_unaligned, 'rU') # open the unaligned reads from bowtie
+            outfile_name = final_sam + "trimmed_unaligned.fq" #new file name for trimmed file
+            outfile = open(outfile_name, 'w')
+            outfile.truncate(0) #clear the most recent iteration of unaligned reads???        
+            for title, seq, qual in FastqGeneralIterator(unaligned_reads): #iterate through the fq entries
+                seq_length = len(seq) - 1 # new size of sequence (one bp smaller) this is for the next iteration
+                #forwards reads
+                if seq_length <= 20:
+                    junk.write('@' + title + '\n')
+                    junk.write(seq[:seq_length] + '\n')
+                    junk.write('+' + '\n')
+                    junk.write(qual[:seq_length] + '\n')
+                elif i == 100: # Take the junk reads from after trimming
+                    if title[-1] != 'b': # if it is a forward read, 
+                    
+                        junk.write('@' + title + '\n')
+                        junk.write(seq[:seq_length] + '\n')
+                        junk.write('+' + '\n')
+                        junk.write(qual[:seq_length] + '\n')
+    
+                    elif title[-1] == 'b': # if backwards read 
+                        junk.write('@' + title + '\n')
+                        junk.write(seq[1:] + '\n')
+                        junk.write('+' + '\n')
+                        junk.write(qual[1:] + '\n')
+                else:
+                    if i == 1 or title[-1] != 'b': # if it is a forward read, cut off from the end. (or if in the first iteration)
+                    
+                        outfile.write('@' + title + '\n')
+                        outfile.write(seq[:seq_length] + '\n')
+                        outfile.write('+' + '\n')
+                        outfile.write(qual[:seq_length] + '\n')
+                    
+                    #backwards reads 
+                    if i == 1: # add the b to the backwards reads for the first iteration
+                        outfile.write('@' + title + 'b' + '\n')
+                        outfile.write(seq[1:] + '\n')
+                        outfile.write('+' + '\n')
+                        outfile.write(qual[1:] + '\n')
+                    elif title[-1] == 'b': # if backwards read then cut from beginning
+                        outfile.write('@' + title + '\n')
+                        outfile.write(seq[1:] + '\n')
+                        outfile.write('+' + '\n')
+                        outfile.write(qual[1:] + '\n')
+            outfile.close()   
+            reads = outfile_name # the reads analyzed in next rotation are the trimmed reads
+            i = i + 1
+        
+        new_file = sam_filename.split('.')[0] + case + ".sam"
+        os.system("mv %s %s" % (sam_filename, new_file))
+        return new_file #returns the file name that contains all the aligned
+    
+    def remove_files(remove):
+        print ("Removing files .......")
+        remove = list(set(remove))
+        for x in remove:
+            #print x
+            os.remove(x)
+    
+    reference_VSG = [] #list of all the VSG genes
+    
+    for record in SeqIO.parse(genome_name, "fasta"):
+        reference_VSG.append(record.id)
+    #print(reference_VSG)
+    
+    bowtie_code = "bowtie -p 20 -v 1 -m 1 -X 1500 --quiet --un %s -S %s %s > %s"
+    seq_length = 0 # to ensure that the final read doesn't get run multiple times (only if reads same length). This is used when the number of reads is very small
+
+    remove_list = []
+    sam_list = [] # list of sam file names to allow merging in the trimmer (this allows for the creation of many files that can be put together)
+    for n in range(105):
+        sam_list.append(final_sam + str(n) + ".sam")
+    new_list = [] #list of the new merged files
+    for m in range(105):
+        new_list.append(final_sam + "new_" + str(m) + ".sam")
+        
+    aligned_list = [] #list of the new merged files
+    for m in range(105):
+        aligned_list.append(final_sam + "aligned_" + str(m) + ".sam")
+    
+    
+    junk = open("%s_junk.fq" % (final_sam), 'w') # JUNK should contain a list of all the reads from the trimmer that did not end up aligning
+    junk_name = final_sam + "_junk.fq"
+    
+    ##########################################################################
+    
+    
+    filename = open(reads_R2, 'rU')
+
+    
+    # Align the first read
+    unaligned_read1 = final_sam + "unaligned_read1.fq" # unaligned file for first read
+    aligned_read1 = final_sam + "aligned_read1.sam" # aligned file name for read 1
+    
+    os.system(bowtie_code % (unaligned_read1, reference, reads_R2, aligned_read1))
+    start_time = time.time()
+    case1 = trimmer(unaligned_read1, "case1") # run trimmer on the unaligned reads
+    
+    print(case1)
+    
+    ###########################  SAVE ALL TRIMMED READ FILES AS BAM
+    
+    sam_file = case1
+    bam_file = final_sam + "Case1_aligned_trim.bam"
+    sorted_bam = bam_file.split(".")[0] + ".sorted.bam"
+    
+    os.system("samtools view -bS -o %s %s" % (bam_file, sam_file))
+    os.system("samtools sort %s -o %s" % (bam_file, sorted_bam))
+    os.system("samtools index %s" % (sorted_bam))
+    #############################
+    print ("Case 1 trim took ", time.time() - start_time, "to run")
+    
+    
+    #output the aligned file to bam to be used for pysam (this is used for seeing what reads to be considered the later steps)
+    sam_file = aligned_read1
+    bam_file = sam_file.split(".")[0] + ".bam"
+    sorted_bam = bam_file.split(".")[0] + ".sorted.bam"
+    remove_list.append(bam_file)
+    remove_list.append(sorted_bam)
+    remove_list.append(sorted_bam + ".bai")
+    
+    os.system("samtools view -bS -o %s %s" % (bam_file, sam_file))
+    os.system("samtools sort %s -o %s" % (bam_file, sorted_bam))
+    os.system("samtools index %s" % (sorted_bam))
+    
+    samfile = pysam.AlignmentFile(sorted_bam, "rb")
+    align_221 = set()
+    for read in samfile.fetch(target_gene): # find all the reads in the read 1 that align to 221
+        align_221.add(str(read.query_name[:-1])) ######## LOOK AT WHOLE READ NAMES
+          
+    
+    output_name = final_sam + "case_2.fq" #name of file to be analyzed for case 2
+    output = open(output_name, 'w')
+    read1 = open(reads_R1, 'rU') ###called from function, R1 file from consolidation step
+    
+    #loop through the reads aligned to 221 and find their corresponding sequence in Read 2
+    
+    start_time = time.time()
+    i = 0
+    for title, seq, qual in FastqGeneralIterator(read1):
+        read_name = title[:-1] # if the barcode matched a barcode that matched to 221
+        if read_name in align_221:
+            output.write('@' + title + '\n')
+            output.write(seq + '\n')
+            output.write('+' + '\n')
+            output.write(qual + '\n')
+            i = i+1
+    #print ("New version took", time.time() - start_time, "to run")
+    output.close()
+    
+    #find all the reads that align to other VSGs in read 2
+    aligned_read2 = final_sam + "aligned_read2.sam"
+    unaligned_read2 = final_sam + "unaligned_read2.fq"
+    
+    print(output_name)
+    
+    os.system(bowtie_code % (unaligned_read2, reference, output_name, aligned_read2))
+    
+    print ("Trimming case 3")
+    case3 = trimmer(unaligned_read2, "case3")
+    
+    print(case3)
+    
+    ###########################  SAVE ALL TRIMMED READ FILES AS BAM
+    sam_file = case3
+    bam_file = final_sam + "Case3_aligned_trim.bam"
+    sorted_bam = bam_file.split(".")[0] + ".sorted.bam"
+    
+    os.system("samtools view -bS -o %s %s" % (bam_file, sam_file))
+    os.system("samtools sort %s -o %s" % (bam_file, sorted_bam))
+    os.system("samtools index %s" % (sorted_bam))
+    #############################
+    
+    print ("Case 3 trim ", time.time() - start_time, "to run")
+    
+
+    print("removing reads!")
+    #remove_list.append(final_sam + "_output_readnames.fq")
+    #remove_list.append(final_sam + "case_2.fq")
+    remove_list.append(final_sam + "trimmed_unaligned.fq")
+    remove_list.append(final_sam + "unaligned_read1.fq")
+    remove_list.append(final_sam + "unaligned_read2.fq")
+    remove_list.append(final_sam + "unaligned.fq")
+    
+    remove_list.append(final_sam + "aligned_read1.sam")
+    remove_list.append(final_sam + "aligned_read2.sam")
+    remove_list.append(final_sam + "aligned_100.sam")
+    
+    #################################################
+
+def demultiplex(bc, R1, R2):
+    # Takes the original read files and splits them out by the experiment based on the barcode file
+    barcode_file = open(bc, 'rU')
+    barcode_dict = {}
+    
+    for line in barcode_file:
+        sample_data = line.strip().split('\t')
+        barcode_dict[sample_data[1]+"+"+sample_data[2]] = sample_data[0]
+    
+    #len_dict = []
+    for barcode in barcode_dict:
+        for read, fastq in [("R1", R1), ("R2",R2)]:
+            outfile = open(barcode_dict[barcode]+"_"+str(barcode)+"_"+read+'.fq', 'w')
+            with open(fastq) as in_handle:
+                for title, seq, qual in FastqGeneralIterator(in_handle):
+                    if title.split(":")[-1][:-8] == barcode:
+                        UMI = title[-8:]
+                        #if len(title[:-8]) == 68 :
+                        #len_dict.append(len(title[:-8]))
+                        
+                        readname = title.split(" ")[0]+'_'+UMI+"\\"+read[1] 
+                        #print readname
+                        #print len(readname)
+                        #print "@%s\n%s\n+\n%s\n" % (readname, seq, qual)
+                        outfile.write("@%s\n%s\n+\n%s\n" % (readname, seq, qual))
+
+def names(barcodes):
+    # Takes an input of the barcode file used in the experiment and makes a list of files for each of the different experimental
+    # conditions for the demultiplexed and then consolidated files
+    
+    barcode_file = open(barcodes, "r")
+    
+    demultiplex_out = {}
+    consolidate_out = {}
+    
+    for line in barcode_file:
+        #print line
+        base_name = line.split("\t")[0] + "_" + line.split("\t")[1] + "+" + line.split("\t")[2]
+        base_name = base_name.strip()
+        #print base_name + "tab"
+        
+        demultiplex_out[base_name] = []
+        demultiplex_out[base_name].append(base_name + "_R1.fq")
+        demultiplex_out[base_name].append(base_name + "_R2.fq")
+        
+        consolidate_out[base_name] = []
+        consolidate_out[base_name].append(base_name + "_consolidated_R1.fq")
+        consolidate_out[base_name].append(base_name + "_consolidated_R2.fq")
+    
+    return demultiplex_out, consolidate_out
+
+def consolidate(read1, read2, Run_name, min_qual, min_freq):
+    start_program = time.time()
+    logger = logging.getLogger('root')
+    
+    def assure_match(molecular_id_dict, junk_file):
+        #Takes the molecular dictionay from read 1 and goes through the read starts and molecular IDs and makes new groupings with reads with 98%
+        # or more similarity in each grouping
+        junk = open(junk_file, 'w') #Create junk file to catch all the reads that are not consolidated
+        junk_sequence = junk_file[:-5] + "_junk_sequence"
+        junk_reads = open(junk_sequence, 'w')
+        
+        junk.write("%s\t%s\t%s\n" % ("Molecular id", "Read Start", "Reads"))
+        junk_dict = []
+        for molecular_id in molecular_id_dict:
+            for read_start in molecular_id_dict[molecular_id].keys(): #Iterate through the Readstarts within each UMI
+                if len(molecular_id_dict[molecular_id][read_start]) > 1: #If the group is larger than just one read with a UMI and readstart
+                    ratio = []
+                    matching = {}
+                    length = len(molecular_id_dict[molecular_id][read_start]) #size of the group
+                    number = 0
+                    
+                    # matching[number] = {}
+                    # matching[number] = [molecular_id_dict[molecular_id][read_start][0]]
+                    
+                    while number < length: # go through the whole group starting at the first read
+                        matching[number] = {}
+                        matching[number] = [molecular_id_dict[molecular_id][read_start][number]] #add the first read to the matching dictionary under new integer index
+                        #print number
+                        i = 0
+                        delete = [] #List of reads to be deleted as they are similar to the other reads
+                        while i < length: #compare the current read to all others and if any is similar above the 98% threshhold then add to the delete file
+                            if i != number: #so as to not compare a read to itself
+                                read_length = min(len(molecular_id_dict[molecular_id][read_start][number].seq), len(molecular_id_dict[molecular_id][read_start][i].seq)) #compare only the shared bases
+                                #print molecular_id_dict[molecular_id][read_start][number].seq[0:read_length]
+                                #print molecular_id_dict[molecular_id][read_start][i].seq[0:read_length]
+                                
+                                ###### THIS IS THE SEQUENCE MATCHER
+                                #s = SequenceMatcher(None, molecular_id_dict[molecular_id][read_start][number].seq[0:read_length], molecular_id_dict[molecular_id][read_start][i].seq[0:read_length]) #compare the two reads
+                                
+                                ##### GLOBAL ALIGN
+                                global_align = pw2.align.globalxx(molecular_id_dict[molecular_id][read_start][number].seq[0:read_length], molecular_id_dict[molecular_id][read_start][i].seq[0:read_length])
+                                print(global_align[0])
+                                matches = global_align[0][2]
+
+                                percent_match = (matches / read_length) * 100
+                                #percent_match = s.ratio() * 100
+                                print(percent_match)
+                                
+                                print("compare " + str(number) + " with " + str(i))
+                                
+                                if percent_match >= 98: #if the similarity is larger than 98%
+                                    delete.append(i) #add the compared read to delete
+                                    if not number in matching: 
+                                        matching[number] = {}
+                                        matching[number] = [molecular_id_dict[molecular_id][read_start][i]]
+                                    else:
+                                        matching[number].append(molecular_id_dict[molecular_id][read_start][i]) #add the similar read to the group
+                                elif percent_match < 98 and ((molecular_id + read_start) not in junk_dict): #so as to only add the not matching reads once
+                                    junk.write("%s\t%s\t" % (molecular_id, read_start))
+                                    for read in molecular_id_dict[molecular_id][read_start]:
+                                        junk.write(read.name+';')
+                                    junk.write('\n')
+                                    junk_dict.append(molecular_id + read_start) # make a list of the reads that are not in the group
+                                    
+                                    junk_reads.write(molecular_id + "\t" + read_start + "\n")
+                                    
+                                    for read in molecular_id_dict[molecular_id][read_start]:
+                                        junk_reads.write(read.name+'; '+ read.seq + "\n")
+                                
+                                ratio.append(percent_match)
+                                print("")
+                            i = i + 1
+                        number = number + 1
+                        #print delete
+                        
+                        for read in sorted(delete, reverse=True):
+                            del(molecular_id_dict[molecular_id][read_start][read]) #remove the matching reads from the list
+                        
+                        length = len(molecular_id_dict[molecular_id][read_start])   #changes the length of the list so you can move to the next read
+                    
+                    del(molecular_id_dict[molecular_id][read_start]) #remove the group of reads
+                    
+                    for number in matching: #Add the reads back into the dictionary with new read starts if different. Each number represents a different group of matched reads
+                        i = 0
+                        for read in matching[number]:
+                            new_readname = read_start + str(number) #add an index to the end of the readstart
+                            
+                            if not molecular_id in molecular_id_dict: #add the reads back to the dictionary with the slightly new groups (these will fall under the same UMI but will have an edited read start)
+                                molecular_id_dict[molecular_id] = {}
+                                molecular_id_dict[molecular_id][new_readname]= [matching[number][i]]
+                            else:
+                                if not new_readname in molecular_id_dict[molecular_id]:
+                                    molecular_id_dict[molecular_id][new_readname] = [matching[number][i]]
+                                else:
+                                    molecular_id_dict[molecular_id][new_readname].append(matching[number][i])
+                            i = i + 1
+    
+    def sort_reads_twosided(fastq_file_1, fastq_file_2, junk_file):
+        #Takes the two read files and sorts the reads on file 1 and then takes those same groupings and applies them to read 2
+        infile = HTSeq.FastqReader(fastq_file_1) #Looking at read 1 first (far end, this is where we are taking the first 8 base pairs)
+        read_num = 0
+    
+        molecular_id_dict = {}
+    
+        for read in infile: #loop through the reads
+            read_name = read.name.split("_")[0] + "_" + read.name.split("_")[1]
+            #print(read_name)
+            sample_id = str(fastq_file_1).split("_")[-2] 
+            #print(sample_id)
+            molecular_id = read.name.split("_")[2][0:8] #unique UMI
+            read_start = read.seq[0:8]  #The first 8 base pairs of Read 1
+            
+            #print(molecular_id)
+            #print(read_start)
+            if not molecular_id in molecular_id_dict: #adding the molecular id to a dictionary (UMI:[Read start1:[Reads], Readstart2:[Reads], Readstart3:[Reads]])
+                molecular_id_dict[molecular_id] = {} #create new index for UMI
+                molecular_id_dict[molecular_id][read_start]= [read]
+            else:
+                if not read_start in molecular_id_dict[molecular_id]: #create new index for read start
+                    molecular_id_dict[molecular_id][read_start] = [read]
+                else:
+                    molecular_id_dict[molecular_id][read_start].append(read) #Add read to existing UMI and readstart
+        #print molecular_id_dict["GTAGTTAT"]
+        #print molecular_id_dict["GTAGTTAT"]["ATCCGAGC"][0].name
+        #print(molecular_id_dict)
+        assure_match(molecular_id_dict, junk_file)
+        
+        #print(molecular_id_dict)
+        
+        read2 = HTSeq.FastqReader(fastq_file_2)
+        molecular_id_dict_2 = {}
+        
+        for read in read2:
+            read_name = read.name.split("\\")[0] # this should match the matching read in file1
+            #print(read_name)
+            molecular_id = read.name.split("_")[2][0:8]
+            read_start_actual = ""
+            for read_start in molecular_id_dict[molecular_id]:
+                i = 0
+                length = len(molecular_id_dict[molecular_id][read_start])
+                while i < length:
+                    if read_name == molecular_id_dict[molecular_id][read_start][i].name.split("\\")[0]: #loop through the groups in read1 and find the matching reads in read2
+                        read_start_actual = read_start
+                    i = i + 1
+            
+            if read_start_actual == "":
+                print("Error: not even reads")
+            
+            #print(read_start_actual) 
+            if not molecular_id in molecular_id_dict_2: #add these reads to a new dictionary
+                molecular_id_dict_2[molecular_id] = {}
+                molecular_id_dict_2[molecular_id][read_start_actual]= [read]
+            else:
+                if not read_start_actual in molecular_id_dict_2[molecular_id]:
+                    molecular_id_dict_2[molecular_id][read_start_actual] = [read]
+                else:
+                    molecular_id_dict_2[molecular_id][read_start_actual].append(read)
+
+        #print molecular_id_dict["GTAGTTAT"]
+        #print molecular_id_dict_2["GTAGTTAT"]
+        return molecular_id_dict, molecular_id_dict_2
+    
+    def sort_reads(fastq_file):
+        infile = HTSeq.FastqReader(fastq_file)
+        read_num = 0
+        #bin_name = [] # Will consist of the molecular_id followed by the incoming 2nd header field (which includes sample_id)
+        #bin_reads = []
+        molecular_id_dict = {}
+        #import itertools
+        #for read in itertools.islice( infile, 10000 ): # Read the first few reads for testing
+        for read in infile:
+            read_name = read.name.split("_")[0]
+            #print read_name
+            sample_id = str(fastq_file).split("_")[-2]
+            #print sample_id
+            molecular_id = read.name.split("_")[1][0:8]
+            read_start = read.seq[0:8]
+            #print molecular_id +"molecular_id"
+            #print read_start +"read_start"
+            if not molecular_id in molecular_id_dict:
+                molecular_id_dict[molecular_id] = {}
+                molecular_id_dict[molecular_id][read_start]= [read]
+            else:
+                if not read_start in molecular_id_dict[molecular_id]:
+                    molecular_id_dict[molecular_id][read_start] = [read]
+                else:
+                    molecular_id_dict[molecular_id][read_start].append(read)
+        #print molecular_id_dict["GTAGTTAT"]
+        #print molecular_id_dict["GTAGTTAT"]["GGCTTGTG"]
+        return molecular_id_dict
+    
+    def consolidate_position(bases, quals, min_qual, min_freq):
+        num = {}
+        qual = {}
+        num['A'] = num['C'] = num['G'] = num['T'] = num['N'] = 0
+        qual['A'] = qual['C'] = qual['G'] = qual['T'] = qual['N'] = 0
+        for bb, qq in zip(bases, quals):
+            if qq > min_qual:
+                num[bb] += 1
+            if qq > qual[bb]:
+                qual[bb] = qq
+        most_common_base = max(num.iterkeys(), key=(lambda key: num[key]))
+        freq = float(num[most_common_base]) / len(bases)
+        if freq > min_freq:
+            return True, most_common_base, qual[most_common_base]
+        else:
+            return False,'N', 0
+        
+    def consolidate(fastq_file, consolidated_fastq_file, read_data_file, min_qual, min_freq, bins, suffix):
+        outfile = open(consolidated_fastq_file, 'w')
+        readdatafile = open(read_data_file + suffix, 'w')
+        readdatafile.write('Molecular_id\tnumber\tnumber_reads_used\treads\tRead_start\tPrimer\n')
+        #bins = read_bins(fastq_file)
+        #bins = sort_reads(fastq_file)
+        #next(bins)
+    
+        #outfile.write("SHANE")
+    
+        num_input_reads = 0
+        num_consolidated_reads = 0
+        num_successes = 0 # Bases with successful consolidation
+        num_bases = 0
+        primer = ''
+        
+        for id in bins.iterkeys():
+            num_start = 0
+            for start in bins[id].iterkeys():
+                reads = bins[id][start]
+                num_start += 1
+                num_input_reads += len(reads)
+                num_consolidated_reads += 1
+                # Get all the bases and quals in the read
+                read_bases = zip(*[list(read.seq) for read in reads])
+                read_quals = zip(*[list(read.qual) for read in reads])
+                # Iterate position by position
+                consolidation_sucess, cons_seq, cons_qual = zip(*[consolidate_position(bases, quals, min_qual, min_freq) for bases, quals in zip(read_bases, read_quals)])
+                # Count consolidation successes and failures
+                num_successes += sum(consolidation_sucess)
+                num_bases += len(consolidation_sucess)
+                # Write consolidated FASTQ read
+                readdatafile.write('%s\t%d\t%d\t%s\t' % (id, num_start,len(reads), start))
+                for read in reads:
+                    readdatafile.write(read.name+';')
+                    #print(read.name)
+                    primer = read.name.split('_')[1]
+                    #print(primer)
+                readdatafile.write("\t" + primer)
+                readdatafile.write('\n')
+                
+                outfile.write('@%s_%s_%d_%dreads\%s\n' % (primer, id, num_start,len(reads), suffix)) # Header: Molecular id, position for this molecular id, number of reads for consolidation
+                outfile.write(''.join(cons_seq) +'\n')
+                outfile.write('+\n')
+                outfile.write(''.join([chr(q+33) for q in cons_qual]) + '\n')
+                
+
+    
+        logger.info("Read %d input reads", num_input_reads)
+        logger.info("Wrote %d consolidated reads", num_consolidated_reads)
+        #logger.info("Successfully consolidated %d bases out of %d (%.2f%%)", num_successes, num_bases, 100*float(num_successes)/num_bases)
+        outfile.close()
+
+
+    fastq_file_1 = read1
+    fastq_file_2 = read2
+    
+    
+    consolidated_fastq_file = Run_name + "_" + "consolidated_R1.fq" #Final file names
+    consolidated_fastq_file_2 = Run_name + "_" + "consolidated_R2.fq" 
+    read_data_file = Run_name + "_read_data"
+    
+    junk = Run_name + "_junk" #junk file
+
+    min_qual = int(min_qual) #the minimum quality for consolidation (15)
+    min_freq = float(min_freq) #minimum frequency of base pair (0.9)
+
+    molecular_id_dict, molecular_id_dict_2 = sort_reads_twosided(fastq_file_1, fastq_file_2, junk)
+    
+    print ("Consolidate time", time.time() - start_program)
+    
+    
+    consolidate(fastq_file_1, consolidated_fastq_file, read_data_file, min_qual, min_freq, molecular_id_dict, "1") #consolidate each of the two files
+    consolidate(fastq_file_2, consolidated_fastq_file_2, read_data_file, min_qual, min_freq, molecular_id_dict_2, "2")
+    
+    print ("Final time", time.time() - start_program)
+
+def annotate_primers(read1, read2, primers):
+    primer_file = open(primers, 'rU')
+    primer_dict = {}
+    
+    for line in primer_file:
+        sample_data = line.strip().split('\t')
+        primer_dict[sample_data[1]] = sample_data[0]
+        primer_length = len(sample_data[1])
+
+    readname_list=set()
+    outfile1_name = read1.split('.')[0]+'_'+"primers"+'.fq'
+    outfile2_name = read2.split('.')[0]+'_'+"primers"+'.fq'
+    outfile1 = open(read1.split('.')[0]+'_'+"primers"+'.fq', 'w')
+    outfile2 = open(read2.split('.')[0]+'_'+"primers"+'.fq', 'w')
+    read1 = HTSeq.FastqReader(read1)
+    read2 = HTSeq.FastqReader(read2)
+    fastq = zip(read1, read2)
+    for read in fastq:
+        if read[1].seq[0:primer_length] in primer_dict:
+            outfile1.write("@%s_%s %s\n%s\n+\n%s\n" % (read[0].name.split(' ')[0], primer_dict[read[1].seq[0:primer_length]], read[0].name.split(' ')[1], read[0].seq, read[0].qualstr))
+            outfile2.write("@%s_%s %s\n%s\n+\n%s\n" % (read[1].name.split(' ')[0], primer_dict[read[1].seq[0:primer_length]], read[1].name.split(' ')[1], read[1].seq, read[1].qualstr))
+            #print(primer_dict[read[1].seq[0:primer_length]])
+        else:
+            outfile1.write("@%s_%s %s\n%s\n+\n%s\n" % (read[0].name.split(' ')[0], "OR", read[0].name.split(' ')[1], read[0].seq, read[0].qualstr))
+            outfile2.write("@%s_%s %s\n%s\n+\n%s\n" % (read[1].name.split(' ')[0], "OR", read[1].name.split(' ')[1], read[1].seq, read[1].qualstr))
+    
+    return outfile1_name, outfile2_name
+    
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-bc',help='tab-delimited text file with sample name, i7 barcode sequence, and i5 barcode sequence ', action="store", dest="bc", default='')
+    parser.add_argument('-R1',help='R1 fastq file', action="store", dest="R1", default='')
+    parser.add_argument('-R2',help='R2 fastq file', action="store", dest="R2", default='')
+    parser.add_argument('-min_qual',help='Minimum quality for consolidation. Default = 15', action="store", dest="min_qual", default='15')
+    parser.add_argument('-min_freq',help='Minimum frequency for consolidation. Default = 0.9', action="store", dest="min_freq", default='0.9')
+    parser.add_argument('-ref',help='Reference name for the genome (.ebwt file name)', action="store", dest="reference", default='')
+    parser.add_argument('-genome',help='The genome in fasta file format (.fasta file)', action="store", dest="genome_name", default='')
+    parser.add_argument('-gff',help='VSG informational file. (.gff file)', action="store", dest="gff_file", default='')
+    parser.add_argument('-target',help='The name of the target gene. (ex. VSG_221 or Tb427VSG-2 or Tbb1125VSG-AnTat1.1)', action="store", dest="target_gene", default='')
+    parser.add_argument('-primers',help='The .csv file with the primer names', action="store", dest="primers", default='')
+    
+    
+    arguments = parser.parse_args()
+    
+    # Runs a quality and adapter based trimming process on the reads
+    print("PRIMERS")
+    outfile1, outfile2 = annotate_primers(arguments.R1, arguments.R2, arguments.primers)    
+    
+    # Runs a quality and adapter based trimming process on the reads
+    print("TRIMMING")
+    os.system("trim_galore --dont_gzip --paired --adapter ACTCCAGTCAC --adapter2 AGATCGGAAGAGC --trim1 %s %s" % (outfile1, outfile2))
+    
+    # Constructs the file names outputted by the triming process
+    trim_out_R1 = outfile1.split(".")[0] + "_val_1.fq"
+    trim_out_R2 = outfile2.split(".")[0] + "_val_2.fq"
+    
+    
+    # Takes the singular read files and splits them out by experiments as defined in the barcode file
+    print("DEMULTIPLEXING")
+    demultiplex(arguments.bc, trim_out_R1, trim_out_R2)
+    demultiplex_names, consolidate_names = names(arguments.bc) # Makes a dictionary of file names for the consolidate process
+    
+
+    print("CONSOLIDATING")    
+    for name in demultiplex_names:
+        consolidate(demultiplex_names[name][0], demultiplex_names[name][1], name, arguments.min_qual, arguments.min_freq)
+    
+    print("VSG_seq")
+    
+    for name in consolidate_names:
+        print(name)
+        VSG(consolidate_names[name][0], consolidate_names[name][1], arguments.reference, name, arguments.genome_name, arguments.gff_file, arguments.target_gene)
+
+if __name__ == '__main__':
+    main()
