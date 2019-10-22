@@ -1,3 +1,4 @@
+####### VSG AMP-Seq analysis
 import argparse # to take the arguments into the file
 from datetime import datetime # time specific tests for optimization
 from sys import argv 
